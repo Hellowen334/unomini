@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import cors from 'cors';
@@ -31,11 +31,11 @@ const matchmaker = new Matchmaker(io, roomManager);
 
 const PORT = process.env.PORT || 3001;
 
-app.get('/health', (req, res) => {
+app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', service: 'arya-uno-server' });
 });
 
-app.get('/api/leaderboard', async (req, res) => {
+app.get('/api/leaderboard', async (_req: Request, res: Response) => {
     try {
         const topPlayers = await prisma.user.findMany({
             orderBy: { wins: 'desc' },
@@ -55,7 +55,7 @@ app.get('/api/leaderboard', async (req, res) => {
     }
 });
 
-app.get('/api/me', async (req, res) => {
+app.get('/api/me', async (req: Request, res: Response) => {
     try {
         const initData = req.headers['x-telegram-init-data'] as string;
         const botToken = process.env.BOT_TOKEN;
@@ -95,7 +95,7 @@ app.get('/api/me', async (req, res) => {
     }
 });
 
-app.get('/api/achievements', async (req, res) => {
+app.get('/api/achievements', async (_req: Request, res: Response) => {
     res.json(ACHIEVEMENTS);
 });
 
