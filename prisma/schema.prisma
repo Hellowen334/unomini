@@ -3,12 +3,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 model User {
-  id           BigInt        @id
+  id           Int           @id @default(autoincrement())
   firstName    String
   username     String?
   photoUrl     String?
@@ -37,7 +37,7 @@ model Achievement {
 
 model UserAchievement {
   id            String      @id @default(uuid())
-  userId        BigInt
+  userId        Int
   achievementId String
   unlockedAt    DateTime    @default(now())
   user          User        @relation(fields: [userId], references: [id])
