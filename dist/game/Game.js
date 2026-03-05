@@ -1,4 +1,4 @@
-import { Deck } from './Deck.js';
+import { BalancedDeck } from './BalancedDeck.js';
 import { Player } from './Player.js';
 import { SKIP, REVERSE, DRAW_TWO, DRAW_FOUR, CHOOSE } from './constants.js';
 export class Game {
@@ -21,7 +21,7 @@ export class Game {
     constructor(id, mode = 'classic', onStateChange) {
         this.id = id;
         this.mode = mode;
-        this.deck = new Deck();
+        this.deck = new BalancedDeck({ playerCount: 4 });
         this.onStateChange = onStateChange;
     }
     addPlayer(id, firstName) {
@@ -69,21 +69,18 @@ export class Game {
         if (this.players.length < 2)
             throw new Error("Not enough players");
         if (this.mode === 'classic') {
-            this.deck.fillClassic();
+            this.deck.fillBalancedClassic();
         }
         else {
-            this.deck.fillWild();
+            this.deck.fillBalancedWild();
         }
-        for (const p of this.players) {
-            p.drawFirstHand();
+        // Dengeli kart dağıtımı
+        const hands = this.deck.dealBalancedHands(this.players.length);
+        for (let i = 0; i < this.players.length; i++) {
+            this.players[i].cards = hands[i];
         }
-        // Draw first card that is not a special card
-        do {
-            if (this.lastCard && this.lastCard.special) {
-                this.deck.dismiss(this.lastCard);
-            }
-            this.lastCard = this.deck.draw();
-        } while (this.lastCard.special);
+        // Güvenli ilk kart seç
+        this.lastCard = this.deck.drawSafeFirstCard();
         this.started = true;
         this.playCardEffects(this.lastCard, true);
     }
@@ -191,82 +188,81 @@ export class Game {
     applyBonusEffect(special) {
         switch (special) {
             case 'fire':
-                this.players.forEach(p => {
-                    if (p !== this.currentPlayer) {
-                        for (let i = 0; i < 3; i++)
-                            p.cards.push(this.deck.draw());
-                    }
-                });
+                // Hedef oyuncuyu 1 tur dondur (daha dengeli)
+                const opponents = this.players.filter(p => p !== this.currentPlayer);
+                if (opponents.length > 0) {
+                    const target = opponents[Math.floor(Math.random() * opponents.length)];
+                    target.frozen = true;
+                }
                 break;
             case 'ice':
-                this.players.forEach(p => {
-                    if (p !== this.currentPlayer)
-                        p.frozen = true;
-                });
+                // Kendini 1 tur koruma altına al
+                if (this.currentPlayer)
+                    this.currentPlayer.shieldActive = true;
                 break;
             case 'lightning':
-                this.players.forEach(p => {
-                    if (p !== this.currentPlayer)
-                        p.cards.push(this.deck.draw());
-                });
+                // Rastgele rakipten 1 kart çek (daha az güçlü)
+                const lightningTargets = this.players.filter(p => p !== this.currentPlayer);
+                if (lightningTargets.length > 0 && lightningTargets[0].cards.length > 0) {
+                    const target = lightningTargets[Math.floor(Math.random() * lightningTargets.length)];
+                    target.cards.push(this.deck.draw());
+                }
                 break;
             case 'wind':
+                // Yönü ters çevir (basit ve etkili)
                 this.reversed = !this.reversed;
                 break;
             case 'diamond':
+                // 1 kart çekme hakkı (daha dengeli)
                 if (this.currentPlayer) {
-                    for (const c of this.currentPlayer.cards)
-                        this.deck.dismiss(c);
-                    this.currentPlayer.cards = [];
-                    for (let i = 0; i < 7; i++)
-                        this.currentPlayer.cards.push(this.deck.draw());
+                    this.currentPlayer.cards.push(this.deck.draw());
                 }
                 break;
             case 'shield':
+                // Bir sonraki özel karttan koruma
                 if (this.currentPlayer)
                     this.currentPlayer.shieldActive = true;
                 break;
             case 'target':
-                const opponents = this.players.filter(p => p !== this.currentPlayer);
-                if (opponents.length > 0) {
-                    const target = opponents[Math.floor(Math.random() * opponents.length)];
-                    for (let i = 0; i < 2; i++)
-                        target.cards.push(this.deck.draw());
+                // Hedef oyuncuya 1 kart çektir
+                const targetOpponents = this.players.filter(p => p !== this.currentPlayer);
+                if (targetOpponents.length > 0) {
+                    const target = targetOpponents[Math.floor(Math.random() * targetOpponents.length)];
+                    target.cards.push(this.deck.draw());
                 }
                 break;
             case 'luck':
-                const effects = ['fire', 'ice', 'lightning', 'wind'];
-                const randomEffect = effects[Math.floor(Math.random() * effects.length)];
+                // Rastgele zayıf etki (daha az kaos)
+                const weakEffects = ['ice', 'shield', 'diamond'];
+                const randomEffect = weakEffects[Math.floor(Math.random() * weakEffects.length)];
                 this.applyBonusEffect(randomEffect);
                 break;
             case 'time':
-                if (this.previousCard && this.lastCard) {
-                    this.deck.dismiss(this.lastCard);
-                    this.lastCard = this.previousCard;
-                    this.previousCard = null;
-                }
+                // Sırayı koru (basit)
+                this.currentPlayer.doubleTurn = true;
                 break;
             case 'star':
-                if (this.currentPlayer)
-                    this.currentPlayer.doubleTurn = true;
+                // Ekstra kart oynama hakkı yerine 1 kart çek
+                if (this.currentPlayer) {
+                    this.currentPlayer.cards.push(this.deck.draw());
+                }
                 break;
             case 'circus':
-                const allCards = [];
+                // Herkesten 1 kart çek ve karıştır (daha az kaotik)
+                const drawnCards = [];
                 for (const p of this.players) {
-                    allCards.push(...p.cards);
-                    p.cards = [];
+                    if (p.cards.length > 0) {
+                        drawnCards.push(p.cards.pop());
+                    }
                 }
-                for (let i = allCards.length - 1; i > 0; i--) {
+                // Karıştır ve geri dağıt
+                for (let i = drawnCards.length - 1; i > 0; i--) {
                     const j = Math.floor(Math.random() * (i + 1));
-                    [allCards[i], allCards[j]] = [allCards[j], allCards[i]];
+                    [drawnCards[i], drawnCards[j]] = [drawnCards[j], drawnCards[i]];
                 }
-                const cardsPerPlayer = Math.floor(allCards.length / this.players.length) || 1;
-                for (let i = 0; i < this.players.length; i++) {
-                    const start = i * cardsPerPlayer;
-                    const end = start + cardsPerPlayer;
-                    this.players[i].cards = allCards.slice(start, end);
+                for (let i = 0; i < Math.min(drawnCards.length, this.players.length); i++) {
+                    this.players[i].cards.push(drawnCards[i]);
                 }
-                // Any remainder cards got lost or we can push them to graveyard
                 break;
         }
     }

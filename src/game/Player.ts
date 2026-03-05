@@ -26,12 +26,6 @@ export class Player {
         this.firstName = firstName;
     }
 
-    drawFirstHand() {
-        for (let i = 0; i < 7; i++) {
-            this.cards.push(this.game.deck.draw());
-        }
-    }
-
     draw(): number {
         if (this.game.drawCounter > 0 && this.shieldActive) {
             this.shieldActive = false;
