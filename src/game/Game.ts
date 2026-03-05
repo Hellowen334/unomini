@@ -192,7 +192,7 @@ export class Game {
         }
 
         // Apply bonus effects if any
-        if (card.special && ![CHOOSE, DRAW_FOUR].includes(card.special as any)) {
+        if (card.special && card.special !== CHOOSE && card.special !== DRAW_FOUR) {
             this.applyBonusEffect(card.special);
             // Most bonus cards need a color if they are black (Wild)
             if (!card.color && !isFirstCard) {

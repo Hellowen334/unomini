@@ -4,11 +4,24 @@ import { Server, Socket } from 'socket.io';
 export class RoomManager {
     private io: Server;
     public games: Map<string, Game> = new Map();
-    // socket.id -> roomId
+    /** socket.id -> roomId */
     public playerRooms: Map<string, string> = new Map();
+    /** Hızlı maç ile açılmış, katılıma açık oda id'leri */
+    public matchmakingRoomIds: Set<string> = new Set();
 
     constructor(io: Server) {
         this.io = io;
+    }
+
+    /** Aynı modda, başlamamış ve 4'ten az oyuncusu olan matchmaking odası bulur */
+    getJoinableMatchmakingRoom(mode: GameMode): Game | null {
+        for (const roomId of this.matchmakingRoomIds) {
+            const game = this.games.get(roomId);
+            if (game && !game.started && game.mode === mode && game.players.length < 4) {
+                return game;
+            }
+        }
+        return null;
     }
 
     broadcastGameState(roomId: string, game: Game) {
@@ -21,30 +34,36 @@ export class RoomManager {
     }
 
 
+    /** Sadece 5 rakamdan oluşan oda kodu üretir (0-9) */
     generateRoomCode(): string {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         let code = '';
         do {
             code = '';
-            for (let i = 0; i < 6; i++) {
-                code += chars.charAt(Math.floor(Math.random() * chars.length));
+            for (let i = 0; i < 5; i++) {
+                code += Math.floor(Math.random() * 10).toString();
             }
         } while (this.games.has(code));
         return code;
     }
 
-    createRoom(socket: Socket, hostId: number, hostName: string, mode: GameMode = 'classic') {
+    createRoom(socket: Socket, hostId: number, hostName: string, mode: GameMode = 'classic', isMatchmaking = false) {
         const roomId = this.generateRoomCode();
         const game = new Game(roomId, mode, (g) => this.broadcastGameState(roomId, g));
 
-
         game.addPlayer(hostId, hostName);
         this.games.set(roomId, game);
+        if (isMatchmaking) {
+            this.matchmakingRoomIds.add(roomId);
+        }
 
         this.playerRooms.set(socket.id, roomId);
         socket.join(roomId);
 
         return game;
+    }
+
+    removeMatchmakingRoom(roomId: string) {
+        this.matchmakingRoomIds.delete(roomId);
     }
 
     joinRoom(socket: Socket, roomId: string, playerId: number, playerName: string) {
@@ -77,6 +96,7 @@ export class RoomManager {
 
             // If room is empty, clean it up
             if (game.players.length === 0) {
+                this.matchmakingRoomIds.delete(roomId);
                 this.games.delete(roomId);
             } else if (game.players.length < 2 && game.started) {
                 // Not enough players to continue

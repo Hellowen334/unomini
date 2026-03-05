@@ -22,59 +22,61 @@ export class Matchmaker {
 
     joinQueue(socket: Socket, playerId: number, playerName: string, mode: GameMode = 'classic') {
         const queue = mode === 'classic' ? this.queueClassic : this.queueWild;
-
-        // Zaten kuyrukta mı kontrol et
         if (queue.some(p => p.playerId === playerId)) return;
 
-        queue.push({ socket, playerId, playerName, mode });
+        // Açık bir hızlı maç odası varsa doğrudan o odaya katıl
+        const openRoom = this.roomManager.getJoinableMatchmakingRoom(mode);
+        if (openRoom) {
+            try {
+                this.roomManager.joinRoom(socket, openRoom.id, playerId, playerName);
+                socket.emit('room:joined', {
+                    id: openRoom.id,
+                    code: openRoom.id,
+                    hostId: openRoom.players[0]?.id || 0,
+                    players: openRoom.players.map(p => p.toJSON()),
+                    maxPlayers: 4,
+                    mode: openRoom.mode
+                });
+                const newPlayer = openRoom.players.find(p => p.id === playerId);
+                if (newPlayer) {
+                    this.roomManager.io.to(openRoom.id).emit('room:playerJoined', newPlayer.toJSON());
+                }
+                // 2+ oyuncu olduğunda oyunu başlat
+                if (openRoom.players.length >= 2) {
+                    openRoom.start();
+                    this.roomManager.removeMatchmakingRoom(openRoom.id);
+                    this.roomManager.io.in(openRoom.id).fetchSockets().then(sockets => {
+                        sockets.forEach(s => {
+                            const u = s.data.user;
+                            if (u) s.emit('game:started', openRoom.getState(u.id));
+                        });
+                    });
+                }
+            } catch {
+                this.createMatchmakingRoom(socket, playerId, playerName, mode);
+            }
+            return;
+        }
 
-        // Herkesi bilgilendir (Kuyruk boyutu)
-        queue.forEach(p => {
-            p.socket.emit('matchmaking:waiting', queue.length);
+        // Açık oda yok — ilk oyuncu için yeni matchmaking odası oluştur
+        this.createMatchmakingRoom(socket, playerId, playerName, mode);
+    }
+
+    private createMatchmakingRoom(socket: Socket, playerId: number, playerName: string, mode: GameMode) {
+        const game = this.roomManager.createRoom(socket, playerId, playerName, mode, true);
+        socket.emit('room:created', {
+            id: game.id,
+            code: game.id,
+            hostId: playerId,
+            players: game.players.map(p => p.toJSON()),
+            maxPlayers: 4,
+            mode: game.mode
         });
-
-        this.checkQueue(mode);
+        socket.emit('matchmaking:waiting', 1);
     }
 
     leaveQueue(playerId: number) {
         this.queueClassic = this.queueClassic.filter(p => p.playerId !== playerId);
         this.queueWild = this.queueWild.filter(p => p.playerId !== playerId);
-    }
-
-    private checkQueue(mode: GameMode) {
-        const queue = mode === 'classic' ? this.queueClassic : this.queueWild;
-
-        // 2 oyuncu olunca hemen başlat
-        if (queue.length >= 2) {
-            const playersToMatch = queue.splice(0, 2);
-
-            const host = playersToMatch[0];
-            const game = this.roomManager.createRoom(host.socket, host.playerId, host.playerName, mode);
-
-            for (let i = 1; i < playersToMatch.length; i++) {
-                const p = playersToMatch[i];
-                this.roomManager.joinRoom(p.socket, game.id, p.playerId, p.playerName);
-            }
-
-            // Oyunu başlat
-            game.start();
-
-            // Odadaki herkese oyunu başlat sinyali ve başlangıç durumunu gönder
-            playersToMatch.forEach(p => {
-                p.socket.emit('game:started', game.getState(p.playerId));
-            });
-
-            // Matchmaking'den çıkarılanlara found sinyali
-            playersToMatch.forEach(p => {
-                p.socket.emit('matchmaking:found', {
-                    id: game.id,
-                    code: game.id,
-                    maxPlayers: 4,
-                    mode: game.mode,
-                    hostId: host.playerId,
-                    players: game.players.map(x => x.toJSON())
-                });
-            });
-        }
     }
 }

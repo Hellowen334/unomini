@@ -8,7 +8,7 @@ export const ACHIEVEMENTS = [
     { id: 'WILD_FIGHTER', name: 'Vahşi Savaşçı', description: 'Wild modunda 10 galibiyet aldınız.', icon: '🐾', xpReward: 2500 }
 ];
 
-export async function checkAndUnlock(userId: number, event: string, context?: any) {
+export async function checkAndUnlock(userId: number, event: string, context?: { mode?: string }) {
     const user = await prisma.user.findUnique({
         where: { id: BigInt(userId) },
         include: { achievements: true }

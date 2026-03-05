@@ -84,7 +84,7 @@ export class Deck {
             }
         }
         for (const special of SPECIALS) {
-            if (BONUS_SPECIALS.includes(special as any)) {
+            if ((BONUS_SPECIALS as readonly string[]).includes(special)) {
                 for (let i = 0; i < 2; i++) {
                     this.cards.push(new Card(null, null, special));
                 }

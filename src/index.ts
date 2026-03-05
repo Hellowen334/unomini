@@ -6,7 +6,7 @@ import { config } from 'dotenv';
 import { RoomManager } from './rooms/RoomManager.js';
 import { Matchmaker } from './rooms/Matchmaker.js';
 import { Game, GameMode } from './game/Game.js';
-import { fromString, Card } from './game/Card.js';
+import type { Color } from './game/constants.js';
 import { validateWebAppData } from './auth/telegram.js';
 import { prisma } from './db/prisma.js';
 import { seedAchievements, ACHIEVEMENTS, checkAndUnlock } from './game/achievements.js';
@@ -44,7 +44,7 @@ app.get('/api/leaderboard', async (_req: Request, res: Response) => {
         });
 
         // BigInt convert to string for JSON
-        const serialized = topPlayers.map((p: any) => ({
+        const serialized = topPlayers.map((p: { id: bigint; firstName: string; wins: number; level: number; photoUrl: string | null }) => ({
             ...p,
             id: p.id.toString()
         }));
@@ -179,8 +179,8 @@ io.on('connection', (socket: Socket) => {
                 maxPlayers: 4,
                 mode: game.mode
             });
-        } catch (e: any) {
-            socket.emit('game:error', e.message);
+        } catch (e: unknown) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Odaya katılamadı');
         }
     });
 
@@ -215,8 +215,8 @@ io.on('connection', (socket: Socket) => {
                     s.emit('game:started', game.getState(u.id));
                 }
             });
-        } catch (e: any) {
-            socket.emit('game:error', e.message);
+        } catch (e: unknown) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Oyun başlatılamadı');
         }
     });
 
@@ -232,7 +232,7 @@ io.on('connection', (socket: Socket) => {
         matchmaker.leaveQueue(user.id);
     });
 
-    socket.on('game:playCard', async (cardId: string, chosenColor: any) => {
+    socket.on('game:playCard', async (cardId: string, chosenColor?: Color) => {
         const user = socket.data.user;
         if (!user) return;
         const roomId = roomManager.playerRooms.get(socket.id);
@@ -364,8 +364,8 @@ io.on('connection', (socket: Socket) => {
             }
 
             broadcastGameState(roomId, game);
-        } catch (e: any) {
-            socket.emit('game:error', e.message);
+        } catch (e: unknown) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Kart çekilemedi');
         }
     });
 
@@ -413,9 +413,16 @@ io.on('connection', (socket: Socket) => {
             });
             // roomManager.joinRoom already emits room:playerJoined to others!
             broadcastGameState(code, game);
-        } catch (e: any) {
-            socket.emit('game:error', e.message);
+        } catch (e: unknown) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Odaya katılamadı');
         }
+    });
+
+    socket.on('room:leave', () => {
+        const user = socket.data.user;
+        if (!user) return;
+        roomManager.leaveRoom(socket, user.id);
+        socket.emit('room:left');
     });
 
     socket.on('disconnect', () => {
