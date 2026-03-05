@@ -7,6 +7,7 @@ import { RoomManager } from './rooms/RoomManager.js';
 import { Matchmaker } from './rooms/Matchmaker.js';
 import { Game, GameMode } from './game/Game.js';
 import type { Color } from './game/constants.js';
+import { COLORS } from './game/constants.js';
 import { validateWebAppData } from './auth/telegram.js';
 import { prisma } from './db/prisma.js';
 import { seedAchievements, ACHIEVEMENTS, checkAndUnlock } from './game/achievements.js';
@@ -394,6 +395,79 @@ io.on('connection', (socket: Socket) => {
             broadcastGameState(roomId, game);
         }
     });
+
+    /** Botlarla hızlı oyun: oda oluştur, 3 bot ekle, oyunu başlat, bot turunu zamanla */
+    socket.on('quickplay:start', () => {
+        const user = socket.data.user;
+        if (!user) return;
+        try {
+            const roomId = roomManager.generateRoomCode();
+            const game = new Game(roomId, 'classic', () => {});
+            game.addPlayer(user.id, user.firstName);
+            game.addPlayer(-1, 'Bot Alfa');
+            game.addPlayer(-2, 'Bot Beta');
+            game.addPlayer(-3, 'Bot Gama');
+            roomManager.games.set(roomId, game);
+            roomManager.playerRooms.set(socket.id, roomId);
+            socket.join(roomId);
+            game.start();
+            socket.emit('game:started', game.getState(user.id));
+            scheduleBotTurn(roomId);
+        } catch (e: unknown) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Hızlı oyun başlatılamadı');
+        }
+    });
+
+    function scheduleBotTurn(roomId: string) {
+        const game = roomManager.games.get(roomId);
+        if (!game || game.winner) return;
+        if (game.currentPlayer && game.currentPlayer.id < 0) {
+            setTimeout(() => doBotTurn(roomId), 1400);
+        }
+    }
+
+    function doBotTurn(roomId: string) {
+        const game = roomManager.games.get(roomId);
+        if (!game || game.winner) return;
+        const bot = game.currentPlayer;
+        if (!bot || bot.id >= 0) return;
+
+        if (game.choosingColor) {
+            const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+            game.chooseColor(color);
+            roomManager.broadcastGameState(roomId, game);
+            return scheduleBotTurn(roomId);
+        }
+
+        const playable = bot.getPlayableCards();
+        if (playable.length > 0) {
+            const card = playable[Math.floor(Math.random() * playable.length)];
+            if (card.special && !card.color) {
+                card.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+            }
+            bot.play(card);
+            if (bot.cards.length === 1 && !bot.calledUno) {
+                bot.cards.push(game.deck.draw());
+                bot.cards.push(game.deck.draw());
+                io.to(roomId).emit('game:error', `${bot.firstName} UNO demeyi unuttu!`);
+            }
+            io.to(roomId).emit('game:cardPlayed', { playerId: bot.id, card: card.toJSON() });
+            const winner = game.winner as { id: number } | null;
+            if (winner) {
+                io.to(roomId).emit('game:finished', {
+                    winnerId: winner.id,
+                    players: game.players.map(p => ({ id: p.id, cardsPlayed: p.cardsPlayed, cardCount: p.cards.length }))
+                });
+                roomManager.games.delete(roomId);
+                return;
+            }
+        } else {
+            bot.draw();
+            game.turn();
+        }
+        roomManager.broadcastGameState(roomId, game);
+        scheduleBotTurn(roomId);
+    }
 
     socket.on('room:join', (code: string) => {
         const user = socket.data.user;

@@ -5,6 +5,8 @@ import cors from 'cors';
 import { config } from 'dotenv';
 import { RoomManager } from './rooms/RoomManager.js';
 import { Matchmaker } from './rooms/Matchmaker.js';
+import { Game } from './game/Game.js';
+import { COLORS } from './game/constants.js';
 import { validateWebAppData } from './auth/telegram.js';
 import { prisma } from './db/prisma.js';
 import { seedAchievements, ACHIEVEMENTS, checkAndUnlock } from './game/achievements.js';
@@ -32,12 +34,7 @@ app.get('/api/leaderboard', async (_req, res) => {
             take: 10,
             select: { id: true, firstName: true, wins: true, level: true, photoUrl: true }
         });
-        // BigInt convert to string for JSON
-        const serialized = topPlayers.map((p) => ({
-            ...p,
-            id: p.id.toString()
-        }));
-        res.json(serialized);
+        res.json(topPlayers);
     }
     catch (e) {
         res.status(500).json({ error: 'Database error' });
@@ -63,15 +60,17 @@ app.get('/api/me', async (req, res) => {
         if (!userStr)
             return res.status(400).json({ error: 'User data missing' });
         const userObj = JSON.parse(decodeURIComponent(userStr));
+        const telegramId = BigInt(userObj.id);
         const dbUser = await prisma.user.findUnique({
-            where: { id: BigInt(userObj.id) },
+            where: { telegramId },
             include: { achievements: { include: { achievement: true } } }
         });
         if (!dbUser)
             return res.status(404).json({ error: 'User not found' });
         res.json({
             ...dbUser,
-            id: dbUser.id.toString(),
+            id: dbUser.id,
+            telegramId: dbUser.telegramId ? dbUser.telegramId.toString() : null,
             winRate: dbUser.gamesPlayed > 0 ? Math.round((dbUser.wins / dbUser.gamesPlayed) * 100) : 0
         });
     }
@@ -100,16 +99,17 @@ io.use(async (socket, next) => {
         if (!userStr)
             return next(new Error('User data missing'));
         const user = JSON.parse(decodeURIComponent(userStr));
+        const telegramId = BigInt(user.id);
         // DB Upsert
         const dbUser = await prisma.user.upsert({
-            where: { id: BigInt(user.id) },
+            where: { telegramId },
             update: {
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
             },
             create: {
-                id: BigInt(user.id),
+                telegramId,
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
@@ -241,13 +241,13 @@ io.on('connection', (socket) => {
             const losers = game.players.filter(p => p.id !== winner.id);
             try {
                 // Winner Stats
-                const winnerDb = await prisma.user.findUnique({ where: { id: BigInt(winner.id) } });
+                const winnerDb = await prisma.user.findUnique({ where: { id: winner.id } });
                 if (winnerDb) {
                     const newXp = (winnerDb.xp || 0) + 100 + (winner.cardsPlayed * 2);
                     const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
                     const leveledUp = newLevel > (winnerDb.level || 1);
                     await prisma.user.update({
-                        where: { id: BigInt(winner.id) },
+                        where: { id: winner.id },
                         data: {
                             wins: { increment: 1 },
                             gamesPlayed: { increment: 1 },
@@ -264,13 +264,13 @@ io.on('connection', (socket) => {
                 }
                 // Loser Stats
                 for (const loser of losers) {
-                    const loserDb = await prisma.user.findUnique({ where: { id: BigInt(loser.id) } });
+                    const loserDb = await prisma.user.findUnique({ where: { id: loser.id } });
                     if (loserDb) {
                         const newXp = (loserDb.xp || 0) + 20 + (loser.cardsPlayed * 2);
                         const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
                         const leveledUp = newLevel > (loserDb.level || 1);
                         await prisma.user.update({
-                            where: { id: BigInt(loser.id) },
+                            where: { id: loser.id },
                             data: {
                                 gamesPlayed: { increment: 1 },
                                 cardsPlayed: { increment: loser.cardsPlayed },
@@ -361,6 +361,80 @@ io.on('connection', (socket) => {
             broadcastGameState(roomId, game);
         }
     });
+    /** Botlarla hızlı oyun: oda oluştur, 3 bot ekle, oyunu başlat, bot turunu zamanla */
+    socket.on('quickplay:start', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        try {
+            const roomId = roomManager.generateRoomCode();
+            const game = new Game(roomId, 'classic', () => { });
+            game.addPlayer(user.id, user.firstName);
+            game.addPlayer(-1, 'Bot Alfa');
+            game.addPlayer(-2, 'Bot Beta');
+            game.addPlayer(-3, 'Bot Gama');
+            roomManager.games.set(roomId, game);
+            roomManager.playerRooms.set(socket.id, roomId);
+            socket.join(roomId);
+            game.start();
+            socket.emit('game:started', game.getState(user.id));
+            scheduleBotTurn(roomId);
+        }
+        catch (e) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Hızlı oyun başlatılamadı');
+        }
+    });
+    function scheduleBotTurn(roomId) {
+        const game = roomManager.games.get(roomId);
+        if (!game || game.winner)
+            return;
+        if (game.currentPlayer && game.currentPlayer.id < 0) {
+            setTimeout(() => doBotTurn(roomId), 1400);
+        }
+    }
+    function doBotTurn(roomId) {
+        const game = roomManager.games.get(roomId);
+        if (!game || game.winner)
+            return;
+        const bot = game.currentPlayer;
+        if (!bot || bot.id >= 0)
+            return;
+        if (game.choosingColor) {
+            const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+            game.chooseColor(color);
+            roomManager.broadcastGameState(roomId, game);
+            return scheduleBotTurn(roomId);
+        }
+        const playable = bot.getPlayableCards();
+        if (playable.length > 0) {
+            const card = playable[Math.floor(Math.random() * playable.length)];
+            if (card.special && !card.color) {
+                card.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+            }
+            bot.play(card);
+            if (bot.cards.length === 1 && !bot.calledUno) {
+                bot.cards.push(game.deck.draw());
+                bot.cards.push(game.deck.draw());
+                io.to(roomId).emit('game:error', `${bot.firstName} UNO demeyi unuttu!`);
+            }
+            io.to(roomId).emit('game:cardPlayed', { playerId: bot.id, card: card.toJSON() });
+            const winner = game.winner;
+            if (winner) {
+                io.to(roomId).emit('game:finished', {
+                    winnerId: winner.id,
+                    players: game.players.map(p => ({ id: p.id, cardsPlayed: p.cardsPlayed, cardCount: p.cards.length }))
+                });
+                roomManager.games.delete(roomId);
+                return;
+            }
+        }
+        else {
+            bot.draw();
+            game.turn();
+        }
+        roomManager.broadcastGameState(roomId, game);
+        scheduleBotTurn(roomId);
+    }
     socket.on('room:join', (code) => {
         const user = socket.data.user;
         if (!user)

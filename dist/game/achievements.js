@@ -8,12 +8,12 @@ export const ACHIEVEMENTS = [
 ];
 export async function checkAndUnlock(userId, event, context) {
     const user = await prisma.user.findUnique({
-        where: { id: BigInt(userId) },
+        where: { id: userId },
         include: { achievements: true }
     });
     if (!user)
         return;
-    const unlockedIds = user.achievements.map(ua => ua.achievementId);
+    const unlockedIds = user.achievements.map((ua) => ua.achievementId);
     for (const achievement of ACHIEVEMENTS) {
         if (unlockedIds.includes(achievement.id))
             continue;
@@ -42,13 +42,13 @@ export async function checkAndUnlock(userId, event, context) {
         if (shouldUnlock) {
             await prisma.userAchievement.create({
                 data: {
-                    userId: BigInt(userId),
+                    userId,
                     achievementId: achievement.id
                 }
             });
             // Apply XP reward
             await prisma.user.update({
-                where: { id: BigInt(userId) },
+                where: { id: userId },
                 data: {
                     xp: { increment: achievement.xpReward }
                 }
