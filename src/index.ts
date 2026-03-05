@@ -43,13 +43,7 @@ app.get('/api/leaderboard', async (_req: Request, res: Response) => {
             select: { id: true, firstName: true, wins: true, level: true, photoUrl: true }
         });
 
-        // BigInt convert to string for JSON
-        const serialized = topPlayers.map((p: { id: bigint; firstName: string; wins: number; level: number; photoUrl: string | null }) => ({
-            ...p,
-            id: p.id.toString()
-        }));
-
-        res.json(serialized);
+        res.json(topPlayers);
     } catch (e) {
         res.status(500).json({ error: 'Database error' });
     }
@@ -79,7 +73,7 @@ app.get('/api/me', async (req: Request, res: Response) => {
 
         const userObj = JSON.parse(decodeURIComponent(userStr));
         const dbUser = await prisma.user.findUnique({
-            where: { id: BigInt(userObj.id) },
+            where: { id: Number(userObj.id) },
             include: { achievements: { include: { achievement: true } } }
         });
 
@@ -87,7 +81,7 @@ app.get('/api/me', async (req: Request, res: Response) => {
 
         res.json({
             ...dbUser,
-            id: dbUser.id.toString(),
+            id: dbUser.id,
             winRate: dbUser.gamesPlayed > 0 ? Math.round((dbUser.wins / dbUser.gamesPlayed) * 100) : 0
         });
     } catch (e) {
@@ -124,14 +118,14 @@ io.use(async (socket, next) => {
 
         // DB Upsert
         const dbUser = await prisma.user.upsert({
-            where: { id: BigInt(user.id) },
+            where: { id: Number(user.id) },
             update: {
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
             },
             create: {
-                id: BigInt(user.id),
+                id: Number(user.id),
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
@@ -272,14 +266,14 @@ io.on('connection', (socket: Socket) => {
 
             try {
                 // Winner Stats
-                const winnerDb = await prisma.user.findUnique({ where: { id: BigInt(winner.id) } });
+                const winnerDb = await prisma.user.findUnique({ where: { id: winner.id } });
                 if (winnerDb) {
                     const newXp = (winnerDb.xp || 0) + 100 + (winner.cardsPlayed * 2);
                     const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
                     const leveledUp = newLevel > (winnerDb.level || 1);
 
                     await prisma.user.update({
-                        where: { id: BigInt(winner.id) },
+                        where: { id: winner.id },
                         data: {
                             wins: { increment: 1 },
                             gamesPlayed: { increment: 1 },
@@ -299,14 +293,14 @@ io.on('connection', (socket: Socket) => {
 
                 // Loser Stats
                 for (const loser of losers) {
-                    const loserDb = await prisma.user.findUnique({ where: { id: BigInt(loser.id) } });
+                    const loserDb = await prisma.user.findUnique({ where: { id: loser.id } });
                     if (loserDb) {
                         const newXp = (loserDb.xp || 0) + 20 + (loser.cardsPlayed * 2);
                         const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
                         const leveledUp = newLevel > (loserDb.level || 1);
 
                         await prisma.user.update({
-                            where: { id: BigInt(loser.id) },
+                            where: { id: loser.id },
                             data: {
                                 gamesPlayed: { increment: 1 },
                                 cardsPlayed: { increment: loser.cardsPlayed },
