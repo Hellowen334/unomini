@@ -72,8 +72,9 @@ app.get('/api/me', async (req: Request, res: Response) => {
         if (!userStr) return res.status(400).json({ error: 'User data missing' });
 
         const userObj = JSON.parse(decodeURIComponent(userStr));
+        const telegramId = BigInt(userObj.id);
         const dbUser = await prisma.user.findUnique({
-            where: { id: Number(userObj.id) },
+            where: { telegramId },
             include: { achievements: { include: { achievement: true } } }
         });
 
@@ -82,6 +83,7 @@ app.get('/api/me', async (req: Request, res: Response) => {
         res.json({
             ...dbUser,
             id: dbUser.id,
+            telegramId: dbUser.telegramId ? dbUser.telegramId.toString() : null,
             winRate: dbUser.gamesPlayed > 0 ? Math.round((dbUser.wins / dbUser.gamesPlayed) * 100) : 0
         });
     } catch (e) {
@@ -115,17 +117,18 @@ io.use(async (socket, next) => {
         if (!userStr) return next(new Error('User data missing'));
 
         const user = JSON.parse(decodeURIComponent(userStr));
+        const telegramId = BigInt(user.id);
 
         // DB Upsert
         const dbUser = await prisma.user.upsert({
-            where: { id: Number(user.id) },
+            where: { telegramId },
             update: {
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
             },
             create: {
-                id: Number(user.id),
+                telegramId,
                 firstName: user.first_name,
                 username: user.username || null,
                 photoUrl: user.photo_url || null,
