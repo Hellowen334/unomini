@@ -39,13 +39,13 @@ export class Matchmaker {
                 });
                 const newPlayer = openRoom.players.find(p => p.id === playerId);
                 if (newPlayer) {
-                    this.roomManager.io.to(openRoom.id).emit('room:playerJoined', newPlayer.toJSON());
+                    this.io.to(openRoom.id).emit('room:playerJoined', newPlayer.toJSON());
                 }
                 // 2+ oyuncu olduğunda oyunu başlat
                 if (openRoom.players.length >= 2) {
                     openRoom.start();
                     this.roomManager.removeMatchmakingRoom(openRoom.id);
-                    this.roomManager.io.in(openRoom.id).fetchSockets().then(sockets => {
+                    this.io.in(openRoom.id).fetchSockets().then(sockets => {
                         sockets.forEach(s => {
                             const u = s.data.user;
                             if (u) s.emit('game:started', openRoom.getState(u.id));

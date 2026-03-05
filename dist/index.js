@@ -7,6 +7,7 @@ import { RoomManager } from './rooms/RoomManager.js';
 import { Matchmaker } from './rooms/Matchmaker.js';
 import { validateWebAppData } from './auth/telegram.js';
 import { prisma } from './db/prisma.js';
+import { seedAchievements, ACHIEVEMENTS, checkAndUnlock } from './game/achievements.js';
 config();
 const app = express();
 app.use(cors());
@@ -21,15 +22,15 @@ const io = new Server(httpServer, {
 const roomManager = new RoomManager(io);
 const matchmaker = new Matchmaker(io, roomManager);
 const PORT = process.env.PORT || 3001;
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: 'arya-uno-server' });
 });
-app.get('/api/leaderboard', async (req, res) => {
+app.get('/api/leaderboard', async (_req, res) => {
     try {
         const topPlayers = await prisma.user.findMany({
             orderBy: { wins: 'desc' },
             take: 10,
-            select: { id: true, firstName: true, wins: true, level: true }
+            select: { id: true, firstName: true, wins: true, level: true, photoUrl: true }
         });
         // BigInt convert to string for JSON
         const serialized = topPlayers.map((p) => ({
@@ -41,6 +42,45 @@ app.get('/api/leaderboard', async (req, res) => {
     catch (e) {
         res.status(500).json({ error: 'Database error' });
     }
+});
+app.get('/api/me', async (req, res) => {
+    try {
+        const initData = req.headers['x-telegram-init-data'];
+        const botToken = process.env.BOT_TOKEN;
+        if (!botToken || process.env.NODE_ENV === 'development') {
+            // Dev modda mock user veya ilk kullanıcıyı getir
+            const user = await prisma.user.findFirst({ include: { achievements: { include: { achievement: true } } } });
+            if (user) {
+                return res.json({ ...user, id: user.id.toString() });
+            }
+            return res.status(404).json({ error: 'User not found in dev mode' });
+        }
+        if (!initData || !validateWebAppData(initData, botToken)) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        const urlParams = new URLSearchParams(initData);
+        const userStr = urlParams.get('user');
+        if (!userStr)
+            return res.status(400).json({ error: 'User data missing' });
+        const userObj = JSON.parse(decodeURIComponent(userStr));
+        const dbUser = await prisma.user.findUnique({
+            where: { id: BigInt(userObj.id) },
+            include: { achievements: { include: { achievement: true } } }
+        });
+        if (!dbUser)
+            return res.status(404).json({ error: 'User not found' });
+        res.json({
+            ...dbUser,
+            id: dbUser.id.toString(),
+            winRate: dbUser.gamesPlayed > 0 ? Math.round((dbUser.wins / dbUser.gamesPlayed) * 100) : 0
+        });
+    }
+    catch (e) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+app.get('/api/achievements', async (_req, res) => {
+    res.json(ACHIEVEMENTS);
 });
 // Auth Middleware
 io.use(async (socket, next) => {
@@ -66,11 +106,13 @@ io.use(async (socket, next) => {
             update: {
                 firstName: user.first_name,
                 username: user.username || null,
+                photoUrl: user.photo_url || null,
             },
             create: {
                 id: BigInt(user.id),
                 firstName: user.first_name,
                 username: user.username || null,
+                photoUrl: user.photo_url || null,
             }
         });
         socket.data.user = {
@@ -87,6 +129,7 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
     const user = socket.data.user;
     console.log(`[Socket] Yeni bağlantı: ${socket.id} (Kullanıcı: ${user.firstName})`);
+    socket.emit('auth:success', user);
     const broadcastGameState = (roomId, game) => {
         io.sockets.sockets.forEach(s => {
             const user = s.data.user;
@@ -95,7 +138,10 @@ io.on('connection', (socket) => {
             }
         });
     };
-    socket.on('room:create', (mode, user) => {
+    socket.on('room:create', (mode) => {
+        const user = socket.data.user;
+        if (!user)
+            return;
         try {
             const game = roomManager.createRoom(socket, user.id, user.firstName, mode);
             socket.emit('room:created', {
@@ -108,26 +154,69 @@ io.on('connection', (socket) => {
             });
         }
         catch (e) {
-            socket.emit('game:error', e.message);
+            socket.emit('game:error', e instanceof Error ? e.message : 'Odaya katılamadı');
         }
     });
-    socket.on('matchmaking:join', (mode, user) => {
-        matchmaker.joinQueue(socket, user.id, user.firstName, mode);
-    });
-    socket.on('matchmaking:leave', (userId) => {
-        matchmaker.leaveQueue(userId);
-    });
-    socket.on('game:playCard', (cardId, chosenColor, user) => {
+    socket.on('game:start', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
         const roomId = roomManager.playerRooms.get(socket.id);
         if (!roomId)
             return;
         const game = roomManager.games.get(roomId);
         if (!game)
             return;
-        if (game.currentPlayer?.id !== user.id) {
-            socket.emit('game:error', 'Sıra sizde değil!');
+        // Check if user is host
+        if (game.players[0].id !== user.id) {
+            socket.emit('game:error', 'Sadece oda kurucusu oyunu başlatabilir.');
             return;
         }
+        // Check minimum player condition
+        if (game.players.length < 2) {
+            socket.emit('game:error', 'Oyunu başlatmak için en az 2 oyuncu gerekiyor.');
+            return;
+        }
+        if (game.started)
+            return;
+        try {
+            game.start();
+            // Emit game:started and the initial state to all players in the room
+            io.sockets.sockets.forEach(s => {
+                const u = s.data.user;
+                if (u && roomManager.playerRooms.get(s.id) === roomId) {
+                    s.emit('game:started', game.getState(u.id));
+                }
+            });
+        }
+        catch (e) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Oyun başlatılamadı');
+        }
+    });
+    socket.on('matchmaking:join', (mode) => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        matchmaker.joinQueue(socket, user.id, user.firstName, mode);
+    });
+    socket.on('matchmaking:leave', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        matchmaker.leaveQueue(user.id);
+    });
+    socket.on('game:playCard', async (cardId, chosenColor) => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        const roomId = roomManager.playerRooms.get(socket.id);
+        if (!roomId)
+            return;
+        const game = roomManager.games.get(roomId);
+        if (!game)
+            return;
+        if (!game.currentPlayer || game.currentPlayer.id !== user.id)
+            return;
         const playerCard = game.currentPlayer.cards.find(c => c.id === cardId);
         if (!playerCard)
             return;
@@ -139,57 +228,177 @@ io.on('connection', (socket) => {
             playerCard.color = chosenColor;
         }
         game.currentPlayer.play(playerCard);
+        // UNO Penalty Check
+        if (game.currentPlayer.cards.length === 1 && !game.currentPlayer.calledUno) {
+            game.currentPlayer.cards.push(game.deck.draw());
+            game.currentPlayer.cards.push(game.deck.draw());
+            io.to(roomId).emit('game:error', `${game.currentPlayer.firstName} UNO demeyi unuttuğu için 2 ceza kartı çekti!`);
+        }
         io.to(roomId).emit('game:cardPlayed', { playerId: user.id, card: playerCard.toJSON() });
         if (game.winner) {
-            io.to(roomId).emit('game:finished', game.winner.id);
+            // Process Winnings and Stats
+            const winner = game.winner;
+            const losers = game.players.filter(p => p.id !== winner.id);
+            try {
+                // Winner Stats
+                const winnerDb = await prisma.user.findUnique({ where: { id: BigInt(winner.id) } });
+                if (winnerDb) {
+                    const newXp = (winnerDb.xp || 0) + 100 + (winner.cardsPlayed * 2);
+                    const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
+                    const leveledUp = newLevel > (winnerDb.level || 1);
+                    await prisma.user.update({
+                        where: { id: BigInt(winner.id) },
+                        data: {
+                            wins: { increment: 1 },
+                            gamesPlayed: { increment: 1 },
+                            cardsPlayed: { increment: winner.cardsPlayed },
+                            xp: newXp,
+                            level: newLevel
+                        }
+                    });
+                    if (leveledUp) {
+                        io.to(roomId).emit('player:levelUp', { playerId: winner.id, level: newLevel });
+                    }
+                    // Achievement Check
+                    await checkAndUnlock(winner.id, 'WIN', { mode: game.mode });
+                }
+                // Loser Stats
+                for (const loser of losers) {
+                    const loserDb = await prisma.user.findUnique({ where: { id: BigInt(loser.id) } });
+                    if (loserDb) {
+                        const newXp = (loserDb.xp || 0) + 20 + (loser.cardsPlayed * 2);
+                        const newLevel = Math.floor(Math.sqrt(newXp / 100)) + 1;
+                        const leveledUp = newLevel > (loserDb.level || 1);
+                        await prisma.user.update({
+                            where: { id: BigInt(loser.id) },
+                            data: {
+                                gamesPlayed: { increment: 1 },
+                                cardsPlayed: { increment: loser.cardsPlayed },
+                                xp: newXp,
+                                level: newLevel,
+                                losses: { increment: 1 }
+                            }
+                        });
+                        if (leveledUp) {
+                            io.to(roomId).emit('player:levelUp', { playerId: loser.id, level: newLevel });
+                        }
+                        // Achievement Check for losers (e.g., participation or specific events)
+                        await checkAndUnlock(loser.id, 'LOSE', { mode: game.mode });
+                    }
+                }
+            }
+            catch (err) {
+                console.error("DB Update Error on Game Finish:", err);
+            }
+            io.to(roomId).emit('game:finished', {
+                winnerId: winner.id,
+                players: game.players.map(p => ({
+                    id: p.id,
+                    cardsPlayed: p.cardsPlayed,
+                    cardCount: p.cards.length
+                }))
+            });
             roomManager.games.delete(roomId);
         }
         else {
             broadcastGameState(roomId, game);
         }
     });
-    socket.on('game:drawCard', (user) => {
+    socket.on('game:drawCard', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
         const roomId = roomManager.playerRooms.get(socket.id);
         if (!roomId)
             return;
         const game = roomManager.games.get(roomId);
-        if (!game || game.currentPlayer?.id !== user.id)
+        if (!game || !game.currentPlayer || game.currentPlayer.id !== user.id)
             return;
         if (game.currentPlayer.drew)
             return; // Zaten çekti
         try {
-            const amount = game.drawCounter || 1;
-            game.currentPlayer.draw();
-            io.to(roomId).emit('game:cardDrawn', { playerId: user.id, count: amount });
-            if (game.currentPlayer.getPlayableCards().length === 0) {
+            const hadPenalty = game.drawCounter > 0;
+            const drawnCount = game.currentPlayer.draw();
+            io.to(roomId).emit('game:cardDrawn', { playerId: user.id, count: drawnCount });
+            if (hadPenalty || game.currentPlayer.getPlayableCards().length === 0) {
                 game.turn();
             }
             broadcastGameState(roomId, game);
         }
         catch (e) {
-            socket.emit('game:error', e.message);
+            socket.emit('game:error', e instanceof Error ? e.message : 'Kart çekilemedi');
         }
     });
-    socket.on('game:pass', (user) => {
+    socket.on('game:pass', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
         const roomId = roomManager.playerRooms.get(socket.id);
         if (!roomId)
             return;
         const game = roomManager.games.get(roomId);
-        if (!game || game.currentPlayer?.id !== user.id)
+        if (!game || !game.currentPlayer || game.currentPlayer.id !== user.id)
             return;
         if (!game.currentPlayer.drew)
             return;
         game.turn();
         broadcastGameState(roomId, game);
     });
+    socket.on('game:callUno', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        const roomId = roomManager.playerRooms.get(socket.id);
+        if (!roomId)
+            return;
+        const game = roomManager.games.get(roomId);
+        if (!game)
+            return;
+        const player = game.players.find(p => p.id === user.id);
+        if (player) {
+            player.calledUno = true;
+            io.to(roomId).emit('game:unoCall', player.id);
+            broadcastGameState(roomId, game);
+        }
+    });
+    socket.on('room:join', (code) => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        try {
+            const game = roomManager.joinRoom(socket, code, user.id, user.firstName);
+            socket.emit('room:joined', {
+                id: game.id,
+                code: game.id,
+                hostId: game.players[0]?.id || 0,
+                players: game.players.map(p => p.toJSON()),
+                maxPlayers: 4,
+                mode: game.mode
+            });
+            // roomManager.joinRoom already emits room:playerJoined to others!
+            broadcastGameState(code, game);
+        }
+        catch (e) {
+            socket.emit('game:error', e instanceof Error ? e.message : 'Odaya katılamadı');
+        }
+    });
+    socket.on('room:leave', () => {
+        const user = socket.data.user;
+        if (!user)
+            return;
+        roomManager.leaveRoom(socket, user.id);
+        socket.emit('room:left');
+    });
     socket.on('disconnect', () => {
         console.log(`[Socket] Bağlantı koptu: ${socket.id}`);
         const user = socket.data.user;
         if (user) {
-            roomManager.leaveRoom(socket, user.id);
+            matchmaker.leaveQueue(user.id);
+            roomManager.handleDisconnect(socket, user.id);
         }
     });
 });
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, async () => {
+    await seedAchievements();
     console.log(`🚀 Arya UNO Backend running on http://localhost:${PORT}`);
 });

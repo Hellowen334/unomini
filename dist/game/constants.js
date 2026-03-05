@@ -27,4 +27,17 @@ export const WILD_VALUES = [ONE, TWO, THREE, FOUR, FIVE, DRAW_TWO, REVERSE, SKIP
 // ── Special Cards ────────────────────────────────
 export const CHOOSE = 'colorchooser';
 export const DRAW_FOUR = 'draw_four';
-export const SPECIALS = [CHOOSE, DRAW_FOUR];
+// ── Bonus Cards ──────────────────────────────────
+export const FIRE = 'fire';
+export const ICE = 'ice';
+export const LIGHTNING = 'lightning';
+export const WIND = 'wind';
+export const DIAMOND = 'diamond';
+export const SHIELD = 'shield';
+export const TARGET = 'target';
+export const LUCK = 'luck';
+export const TIME = 'time';
+export const STAR = 'star';
+export const CIRCUS = 'circus';
+export const BONUS_SPECIALS = [FIRE, ICE, LIGHTNING, WIND, DIAMOND, SHIELD, TARGET, LUCK, TIME, STAR, CIRCUS];
+export const SPECIALS = [CHOOSE, DRAW_FOUR, ...BONUS_SPECIALS];

@@ -1,4 +1,4 @@
-import { DRAW_TWO, DRAW_FOUR, CHOOSE } from './constants.js';
+import { DRAW_TWO, DRAW_FOUR } from './constants.js';
 export class Player {
     id;
     firstName;
@@ -10,6 +10,10 @@ export class Player {
     drew = false;
     bluffing = false;
     calledUno = false;
+    frozen = false;
+    shieldActive = false;
+    doubleTurn = false;
+    cardsPlayed = 0;
     constructor(game, id, firstName) {
         this.game = game;
         this.id = id;
@@ -21,6 +25,13 @@ export class Player {
         }
     }
     draw() {
+        if (this.game.drawCounter > 0 && this.shieldActive) {
+            this.shieldActive = false;
+            this.game.drawCounter = 0;
+            this.drew = true; // Act as if they drew (turn skip applies)
+            this.calledUno = false;
+            return 0;
+        }
         const amount = this.game.drawCounter || 1;
         for (let i = 0; i < amount; i++) {
             this.cards.push(this.game.deck.draw());
@@ -28,11 +39,13 @@ export class Player {
         this.game.drawCounter = 0;
         this.drew = true;
         this.calledUno = false;
+        return amount;
     }
     play(card) {
         const idx = this.cards.findIndex(c => c.id === card.id);
         if (idx > -1) {
             this.cards.splice(idx, 1);
+            this.cardsPlayed++;
         }
         this.game.playCard(card);
     }
@@ -54,40 +67,39 @@ export class Player {
                 }
             }
         }
-        // You cannot play a special card if it's your last card
-        if (this.cards.length === 1 && this.cards[0].special) {
-            return [];
-        }
         return playable;
     }
     isCardPlayable(card) {
+        // If the current game is waiting for a color choice, no card can be played until that's settled.
+        if (this.game.choosingColor)
+            return false;
         const last = this.game.lastCard;
         if (!last)
             return true;
-        let isPlayable = true;
-        if (card.color !== last.color && card.value !== last.value && !card.special) {
-            isPlayable = false;
-        }
-        else if (last.value === DRAW_TWO && this.game.drawCounter > 0) {
-            if (!(card.value === DRAW_TWO || card.special === DRAW_FOUR)) {
-                isPlayable = false;
+        // Penalty Stacking Rules
+        if (this.game.drawCounter > 0) {
+            // Only DRAW_TWO or DRAW_FOUR can be played if a penalty is active
+            if (card.value === DRAW_TWO || card.special === DRAW_FOUR) {
+                return true;
             }
+            return false;
         }
-        else if (last.special === DRAW_FOUR && this.game.drawCounter > 0) {
-            if (!(card.value === DRAW_TWO || card.special === DRAW_FOUR)) {
-                isPlayable = false;
-            }
+        // Wild/Special cards with no color choice yet are always playable
+        if (card.special && !card.color) {
+            return true;
         }
-        else if ((last.special === CHOOSE || last.special === DRAW_FOUR) &&
-            (card.special === CHOOSE || card.special === DRAW_FOUR)) {
-            // Cannot play special on another special directly without color chosen
-            isPlayable = false;
+        // Basic Matching rules: match color OR match value OR match special type
+        if (card.color === last.color || (card.value !== null && card.value === last.value)) {
+            return true;
         }
-        else if (!last.color) {
-            // Color hasn't been chosen yet
-            isPlayable = false;
+        if (card.special !== null && card.special === last.special) {
+            return true;
         }
-        return isPlayable;
+        // Handle case where colors/values don't match but it's a colored special (like Fire on Ice)
+        if (card.special && last.special && card.special === last.special) {
+            return true;
+        }
+        return false;
     }
     toJSON() {
         return {
@@ -96,7 +108,10 @@ export class Player {
             cardCount: this.cards.length,
             isCurrentTurn: this.game.currentPlayer?.id === this.id,
             calledUno: this.calledUno,
-            drew: this.drew
+            drew: this.drew,
+            frozen: this.frozen,
+            shieldActive: this.shieldActive,
+            doubleTurn: this.doubleTurn
         };
     }
 }

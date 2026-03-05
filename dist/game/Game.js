@@ -6,6 +6,7 @@ export class Game {
     deck;
     players = [];
     lastCard = null;
+    previousCard = null;
     currentPlayer = null;
     reversed = false;
     choosingColor = false;
@@ -13,10 +14,15 @@ export class Game {
     drawCounter = 0;
     mode;
     winner = null;
-    constructor(id, mode = 'classic') {
+    turnTimeout = null;
+    turnStartTime = 0;
+    TURN_DURATION = 31000; // 30 seconds + 1s buffer
+    onStateChange;
+    constructor(id, mode = 'classic', onStateChange) {
         this.id = id;
         this.mode = mode;
         this.deck = new Deck();
+        this.onStateChange = onStateChange;
     }
     addPlayer(id, firstName) {
         const player = new Player(this, id, firstName);
@@ -82,16 +88,55 @@ export class Game {
         this.playCardEffects(this.lastCard, true);
     }
     turn() {
+        if (this.turnTimeout) {
+            clearTimeout(this.turnTimeout);
+            this.turnTimeout = null;
+        }
         if (!this.currentPlayer)
             return;
-        this.currentPlayer = this.reversed ? this.currentPlayer.prev : this.currentPlayer.next;
+        if (this.currentPlayer.doubleTurn) {
+            this.currentPlayer.doubleTurn = false;
+            this.currentPlayer.drew = false;
+            this.choosingColor = false;
+            this.startTurnTimer();
+            return; // They get another turn
+        }
+        do {
+            this.currentPlayer = this.reversed ? this.currentPlayer.prev : this.currentPlayer.next;
+            if (this.currentPlayer?.frozen) {
+                this.currentPlayer.frozen = false; // Ice melts
+            }
+            else {
+                break;
+            }
+        } while (true);
         if (this.currentPlayer) {
             this.currentPlayer.drew = false;
         }
         this.choosingColor = false;
+        this.startTurnTimer();
+    }
+    startTurnTimer() {
+        if (this.turnTimeout)
+            clearTimeout(this.turnTimeout);
+        this.turnStartTime = Date.now();
+        this.turnTimeout = setTimeout(() => {
+            this.handleTimeout();
+        }, this.TURN_DURATION);
+    }
+    handleTimeout() {
+        if (!this.currentPlayer || this.winner)
+            return;
+        // Auto draw card if didn't draw, or just pass if can
+        if (!this.currentPlayer.drew) {
+            this.currentPlayer.draw();
+        }
+        this.turn();
+        this.onStateChange(this);
     }
     playCard(card) {
         if (this.lastCard) {
+            this.previousCard = this.lastCard;
             this.deck.dismiss(this.lastCard);
         }
         this.lastCard = card;
@@ -102,11 +147,14 @@ export class Game {
         }
     }
     playCardEffects(card, isFirstCard) {
+        let shouldWaitColor = false;
         if (card.value === SKIP) {
             this.turn();
         }
         else if (card.special === DRAW_FOUR) {
             this.drawCounter += 4;
+            if (!card.color)
+                shouldWaitColor = true;
         }
         else if (card.value === DRAW_TWO) {
             this.drawCounter += 2;
@@ -119,14 +167,107 @@ export class Game {
                 this.reversed = !this.reversed;
             }
         }
-        if (card.special === CHOOSE || card.special === DRAW_FOUR) {
+        // Apply bonus effects if any
+        if (card.special && card.special !== CHOOSE && card.special !== DRAW_FOUR) {
+            this.applyBonusEffect(card.special);
+            // Most bonus cards need a color if they are black (Wild)
+            if (!card.color && !isFirstCard) {
+                // Determine if this specific bonus card needs a color choice
+                // Usually black (wild) variants do.
+                shouldWaitColor = true;
+            }
+        }
+        if (card.special === CHOOSE) {
+            if (!card.color)
+                shouldWaitColor = true;
+        }
+        if (shouldWaitColor && !isFirstCard) {
             this.choosingColor = true;
         }
-        else {
-            // Don't turn if someone played a card but we're just setting up the board
-            if (!isFirstCard) {
-                this.turn();
-            }
+        else if (!isFirstCard) {
+            this.turn();
+        }
+    }
+    applyBonusEffect(special) {
+        switch (special) {
+            case 'fire':
+                this.players.forEach(p => {
+                    if (p !== this.currentPlayer) {
+                        for (let i = 0; i < 3; i++)
+                            p.cards.push(this.deck.draw());
+                    }
+                });
+                break;
+            case 'ice':
+                this.players.forEach(p => {
+                    if (p !== this.currentPlayer)
+                        p.frozen = true;
+                });
+                break;
+            case 'lightning':
+                this.players.forEach(p => {
+                    if (p !== this.currentPlayer)
+                        p.cards.push(this.deck.draw());
+                });
+                break;
+            case 'wind':
+                this.reversed = !this.reversed;
+                break;
+            case 'diamond':
+                if (this.currentPlayer) {
+                    for (const c of this.currentPlayer.cards)
+                        this.deck.dismiss(c);
+                    this.currentPlayer.cards = [];
+                    for (let i = 0; i < 7; i++)
+                        this.currentPlayer.cards.push(this.deck.draw());
+                }
+                break;
+            case 'shield':
+                if (this.currentPlayer)
+                    this.currentPlayer.shieldActive = true;
+                break;
+            case 'target':
+                const opponents = this.players.filter(p => p !== this.currentPlayer);
+                if (opponents.length > 0) {
+                    const target = opponents[Math.floor(Math.random() * opponents.length)];
+                    for (let i = 0; i < 2; i++)
+                        target.cards.push(this.deck.draw());
+                }
+                break;
+            case 'luck':
+                const effects = ['fire', 'ice', 'lightning', 'wind'];
+                const randomEffect = effects[Math.floor(Math.random() * effects.length)];
+                this.applyBonusEffect(randomEffect);
+                break;
+            case 'time':
+                if (this.previousCard && this.lastCard) {
+                    this.deck.dismiss(this.lastCard);
+                    this.lastCard = this.previousCard;
+                    this.previousCard = null;
+                }
+                break;
+            case 'star':
+                if (this.currentPlayer)
+                    this.currentPlayer.doubleTurn = true;
+                break;
+            case 'circus':
+                const allCards = [];
+                for (const p of this.players) {
+                    allCards.push(...p.cards);
+                    p.cards = [];
+                }
+                for (let i = allCards.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allCards[i], allCards[j]] = [allCards[j], allCards[i]];
+                }
+                const cardsPerPlayer = Math.floor(allCards.length / this.players.length) || 1;
+                for (let i = 0; i < this.players.length; i++) {
+                    const start = i * cardsPerPlayer;
+                    const end = start + cardsPerPlayer;
+                    this.players[i].cards = allCards.slice(start, end);
+                }
+                // Any remainder cards got lost or we can push them to graveyard
+                break;
         }
     }
     chooseColor(color) {
@@ -149,7 +290,8 @@ export class Game {
             players: this.players.map(p => p.toJSON()),
             myCards: caller ? caller.cards.map(c => c.toJSON()) : [],
             playableCardIds: caller ? caller.getPlayableCards().map(c => c.id) : [],
-            winnerId: this.winner?.id || null
+            winnerId: this.winner?.id || null,
+            turnTimeLeft: this.currentPlayer ? Math.max(0, this.TURN_DURATION - (Date.now() - this.turnStartTime)) : 0
         };
     }
 }

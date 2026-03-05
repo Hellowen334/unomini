@@ -1,5 +1,5 @@
 import { Card } from './Card.js';
-import { COLORS, VALUES, WILD_VALUES, SPECIALS, ZERO, DRAW_TWO, DRAW_FOUR } from './constants.js';
+import { COLORS, ZERO, ONE, TWO, THREE, FOUR, FIVE, SIX, SEVEN, EIGHT, NINE, DRAW_TWO, SKIP, REVERSE, CHOOSE, DRAW_FOUR, SPECIALS, BONUS_SPECIALS, WILD_VALUES } from './constants.js';
 export class DeckEmptyError extends Error {
     constructor() {
         super('Deste boş');
@@ -31,36 +31,30 @@ export class Deck {
         return this.cards.pop();
     }
     dismiss(card) {
-        if (card.special) {
-            card.color = null; // Rengi sıfırla
-        }
         this.graveyard.push(card);
     }
     fillClassic() {
         this.cards = [];
         for (const color of COLORS) {
-            for (const value of VALUES) {
-                this.cards.push(new Card(color, value));
-                if (value !== ZERO) {
-                    this.cards.push(new Card(color, value));
-                }
-                if (value === DRAW_TWO) { // Extra draw twos for excitement
-                    this.cards.push(new Card(color, value));
-                    this.cards.push(new Card(color, value));
-                }
+            // One '0'
+            this.cards.push(new Card(color, ZERO));
+            // Two of each 1-9
+            const numericals = [ONE, TWO, THREE, FOUR, FIVE, SIX, SEVEN, EIGHT, NINE];
+            for (const val of numericals) {
+                this.cards.push(new Card(color, val));
+                this.cards.push(new Card(color, val));
+            }
+            // Two of each action card
+            const actions = [SKIP, REVERSE, DRAW_TWO];
+            for (const val of actions) {
+                this.cards.push(new Card(color, val));
+                this.cards.push(new Card(color, val));
             }
         }
-        for (const special of SPECIALS) {
-            if (special === DRAW_FOUR) {
-                for (let i = 0; i < 6; i++) {
-                    this.cards.push(new Card(null, null, special));
-                }
-            }
-            else {
-                for (let i = 0; i < 4; i++) {
-                    this.cards.push(new Card(null, null, special));
-                }
-            }
+        // Four Wilds and Four Wild Draw Fours
+        for (let i = 0; i < 4; i++) {
+            this.cards.push(new Card(null, null, CHOOSE));
+            this.cards.push(new Card(null, null, DRAW_FOUR));
         }
         this.shuffle();
     }
@@ -79,7 +73,12 @@ export class Deck {
             }
         }
         for (const special of SPECIALS) {
-            if (special === DRAW_FOUR) {
+            if (BONUS_SPECIALS.includes(special)) {
+                for (let i = 0; i < 2; i++) {
+                    this.cards.push(new Card(null, null, special));
+                }
+            }
+            else if (special === DRAW_FOUR) {
                 for (let i = 0; i < 8; i++) {
                     this.cards.push(new Card(null, null, special));
                 }
