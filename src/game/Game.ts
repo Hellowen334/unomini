@@ -226,10 +226,10 @@ export class Game {
                 break;
             case 'lightning':
                 // Rastgele rakipten 1 kart çek (daha az güçlü)
-                const lightningTargets = this.players.filter(p => p !== this.currentPlayer);
-                if (lightningTargets.length > 0 && lightningTargets[0].cards.length > 0) {
+                const lightningTargets = this.players.filter(p => p !== this.currentPlayer && p.cards.length > 0);
+                if (lightningTargets.length > 0) {
                     const target = lightningTargets[Math.floor(Math.random() * lightningTargets.length)];
-                    target.cards.push(this.deck.draw());
+                    this.currentPlayer!.cards.push(target.cards.pop()!);
                 }
                 break;
             case 'wind':

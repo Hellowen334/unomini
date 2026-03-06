@@ -339,6 +339,7 @@ io.on('connection', (socket: Socket) => {
             roomManager.games.delete(roomId);
         } else {
             broadcastGameState(roomId, game);
+            scheduleBotTurn(roomId); // Bot sırası kontrolü
         }
     });
 
@@ -362,6 +363,7 @@ io.on('connection', (socket: Socket) => {
             }
 
             broadcastGameState(roomId, game);
+            scheduleBotTurn(roomId); // Bot sırası kontrolü
         } catch (e: unknown) {
             socket.emit('game:error', e instanceof Error ? e.message : 'Kart çekilemedi');
         }
@@ -378,6 +380,7 @@ io.on('connection', (socket: Socket) => {
         if (!game.currentPlayer.drew) return;
         game.turn();
         broadcastGameState(roomId, game);
+        scheduleBotTurn(roomId); // Bot sırası kontrolü
     });
 
     socket.on('game:callUno', () => {
@@ -393,6 +396,7 @@ io.on('connection', (socket: Socket) => {
             player.calledUno = true;
             io.to(roomId).emit('game:unoCall', player.id);
             broadcastGameState(roomId, game);
+            scheduleBotTurn(roomId); // Bot sırası kontrolü
         }
     });
 

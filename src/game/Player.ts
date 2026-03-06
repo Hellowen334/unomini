@@ -85,33 +85,39 @@ export class Player {
         const last = this.game.lastCard;
         if (!last) return true;
 
-        // Penalty Stacking Rules
+        // Penalty Stacking Rules - only +2 or +4 can be played on penalty
         if (this.game.drawCounter > 0) {
-            // Only DRAW_TWO or DRAW_FOUR can be played if a penalty is active
-            if (card.value === DRAW_TWO || card.special === DRAW_FOUR) {
-                return true;
-            }
+            // Can play +2 on +2
+            if (card.value === DRAW_TWO) return true;
+            // Can play +4 on any penalty
+            if (card.special === DRAW_FOUR) return true;
             return false;
         }
 
-        // Wild/Special cards with no color choice yet are always playable
+        // Wild/Special cards without color are always playable
+        // (Choose and Draw4 before color selection)
         if (card.special && !card.color) {
             return true;
         }
 
-        // Basic Matching rules: match color OR match value OR match special type
-        if (card.color === last.color || (card.value !== null && card.value === last.value)) {
-            return true;
+        // Wild cards with color selected - match the selected color
+        if (card.special === DRAW_FOUR || card.special === CHOOSE) {
+            // Check if selected color matches last card's color
+            return card.color === last.color;
         }
 
-        if (card.special !== null && card.special === last.special) {
-            return true;
+        // Bonus special cards - match by color OR special type
+        if (card.special) {
+            // Match by color
+            if (card.color === last.color) return true;
+            // Match by special type (e.g., fire on fire)
+            if (card.special === last.special) return true;
+            return false;
         }
 
-        // Handle case where colors/values don't match but it's a colored special (like Fire on Ice)
-        if (card.special && last.special && card.special === last.special) {
-            return true;
-        }
+        // Basic Matching rules: match color OR match value
+        if (card.color === last.color) return true;
+        if (card.value !== null && card.value === last.value) return true;
 
         return false;
     }
